@@ -29,21 +29,39 @@ compare-exported: include/radcli/radcli.h
 	diff -u tmp-exp-$@ tmp-head-$@
 	rm -f tmp-exp-$@ tmp-head-$@
 
-TMPFILE="abi-temp.xml"
-
 abi-check:
-	@rm -f $(TMPFILE)
 	@echo "Checking radcli ABI"
-	@echo "<version>$(VERSION)</version>" >$(TMPFILE)
-	@echo "<headers>$(srcdir)/include/radcli/" >>$(TMPFILE)
-	@echo "$(srcdir)/include/freeradius-client.h" >>$(TMPFILE)
-	@echo "$(srcdir)/include/radiusclient-ng.h</headers>" >>$(TMPFILE)
-	@echo "<libs>$(builddir)/lib/.libs</libs>" >>$(TMPFILE)
 	if test -f "$(srcdir)/devel/ABI-$$(uname -m).dump" && test "$(ABI_SKIP)" != 1; then \
-		abi-compliance-checker -abi -lib radcli -old "$(srcdir)/devel/ABI-$$(uname -m).dump" -new $(TMPFILE); \
+		abidiff --no-added-syms --hd2 $(srcdir)/include/radcli/ $(builddir)/lib/.libs/libradcli.so devel/ABI-x86_64.dump; \
 	fi
-	@rm -f $(TMPFILE)
+
+abi-dump:
+	@echo "Saving radcli ABI"
+	abidw $(builddir)/lib/.libs/libradcli.so --out-file "$(srcdir)/devel/ABI-$$(uname -m).dump"
+
+web: html.upload
+
+clean:
+	rm -f .html.stamp
+
+.html.stamp:
+	rm -rf html/* doc/html/* doc/stamp_html
+	make -C doc stamp_html
+	rsync -Hvax doc/web/ html/
+	rsync -Hvax doc/html/ html/manual/
+	touch $@
+
+html.upload: .html.stamp
+	-git branch -D tmp-web-pages gh-pages
+	git checkout -b tmp-web-pages
+	git add -f html
+	git commit -n -sm "auto-generated web-pages" html
+	git push origin `git subtree split --prefix html tmp-web-pages`:gh-pages --force
+	git checkout master
+	git branch -D tmp-web-pages
 
 dist-hook: compare-exported abi-check
 
 CLEANFILES = *~
+
+.PHONY: web html.upload .html.stamp

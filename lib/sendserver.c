@@ -20,6 +20,16 @@
 #include "rc-md5.h"
 #include "rc-hmac.h"
 
+#if defined(HAVE_GNUTLS)
+# include <gnutls/gnutls.h>
+# include <gnutls/crypto.h>
+#endif
+
+#if defined(__linux__)
+#include <linux/in6.h>
+#endif
+
+
 #define SCLOSE(fd) if (sfuncs->close_fd) sfuncs->close_fd(fd)
 
 static void rc_random_vector(unsigned char *);
@@ -338,7 +348,11 @@ static void rc_random_vector(unsigned char *vector)
 {
 	int randno;
 	int i;
-#if defined(HAVE_GETENTROPY)
+#if defined(HAVE_GNUTLS)
+	if (gnutls_rnd(GNUTLS_RND_NONCE, vector, AUTH_VECTOR_LEN) >= 0) {
+		return;
+	}
+#elif defined(HAVE_GETENTROPY)
 	if (getentropy(vector, AUTH_VECTOR_LEN) >= 0) {
 		return;
 	}			/* else fall through */
@@ -369,8 +383,8 @@ static void rc_random_vector(unsigned char *vector)
 		close(fd);
 		return;
 	}			/* else fall through */
-#endif
  fallback:
+#endif
 	for (i = 0; i < AUTH_VECTOR_LEN;) {
 		randno = random();
 		memcpy((char *)vector, (char *)&randno, sizeof(int));
@@ -448,25 +462,37 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 	uint8_t recv_buffer[BUFFER_LEN];
 	uint8_t send_buffer[BUFFER_LEN];
 	uint8_t *attr;
+	uint16_t tlen;
 	int retries;
 	VALUE_PAIR *vp;
 	struct pollfd pfd;
 	double start_time, timeout;
 	struct sockaddr_storage *ss_set = NULL;
 	char *server_type = "auth";
+	char *ns = NULL;
+	int ns_def_hdl = 0;
 
 	server_name = data->server;
 	if (server_name == NULL || server_name[0] == '\0')
 		return ERROR_RC;
 
+	ns = rc_conf_str(rh, "namespace"); /* Check for namespace config */
+	if (ns != NULL) {
+		if(-1 == rc_set_netns(ns, &ns_def_hdl)) {
+			rc_log(LOG_ERR, "rc_send_server: namespace %s set failed", ns);
+			return ERROR_RC;
+		}
+	}
 	if ((vp = rc_avpair_get(data->send_pairs, PW_SERVICE_TYPE, 0)) &&
 	    (vp->lvalue == PW_ADMINISTRATIVE)) {
 		strcpy(secret, MGMT_POLL_SECRET);
 		auth_addr =
 		    rc_getaddrinfo(server_name,
 				   type == AUTH ? PW_AI_AUTH : PW_AI_ACCT);
-		if (auth_addr == NULL)
-			return ERROR_RC;
+		if (auth_addr == NULL) {
+			result = ERROR_RC;
+			goto exit_error;
+		}    
 	} else {
 		if (data->secret != NULL) {
 			strlcpy(secret, data->secret, MAX_SECRET_LENGTH);
@@ -480,7 +506,8 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 			rc_log(LOG_ERR,
 			       "rc_send_server: unable to find server: %s",
 			       server_name);
-			return ERROR_RC;
+			result = ERROR_RC;
+			goto exit_error;
 		}
 		/*} */
 	}
@@ -496,7 +523,8 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 	if (sfuncs->lock) {
 		if (sfuncs->lock(sfuncs->ptr) != 0) {
 			rc_log(LOG_ERR, "%s: lock error", __func__);
-			return ERROR_RC;
+			result = ERROR_RC;
+			goto exit_error;
 		}
 	}
 
@@ -514,10 +542,10 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 	if (discover_local_ip) {
 		result = rc_get_srcaddr(SA(&our_sockaddr), auth_addr->ai_addr);
 		if (result != 0) {
+			result = errno == ENETUNREACH ? NETUNREACH_RC : ERROR_RC;
 			memset(secret, '\0', sizeof(secret));
 			rc_log(LOG_ERR,
 			       "rc_send_server: cannot figure our own address");
-			result = ERROR_RC;
 			goto cleanup;
 		}
 	}
@@ -530,6 +558,35 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 			       strerror(errno));
 			result = ERROR_RC;
 			goto cleanup;
+		}
+	}
+
+	if(our_sockaddr.ss_family  == AF_INET6) {
+		/* Check for IPv6 non-temporary address support */
+		char *non_temp_addr = rc_conf_str(rh, "use-public-addr");
+		if (non_temp_addr && (strcasecmp(non_temp_addr, "true") == 0)) {
+#if defined(__linux__)
+			int sock_opt = IPV6_PREFER_SRC_PUBLIC;
+			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_ADDR_PREFERENCES, 
+					&sock_opt, sizeof(sock_opt)) != 0) {
+				rc_log(LOG_ERR, "rc_send_server: setsockopt: %s", 
+					strerror(errno));
+				result = ERROR_RC;
+				goto cleanup;
+			}
+#elif defined(BSD) || defined(__APPLE__)
+			int sock_opt = 0;
+			if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_PREFER_TEMPADDR,
+				&sock_opt, sizeof(sock_opt)) != 0) {
+				rc_log(LOG_ERR, "rc_send_server: setsockopt: %s", 
+					strerror(errno));
+				result = ERROR_RC;
+				goto cleanup;
+			}
+#else
+			rc_log(LOG_INFO, "rc_send_server: Usage of non-temporary IPv6"
+					" address is not supported in this system");
+#endif       
 		}
 	}
 
@@ -598,7 +655,8 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 		total_length =
 		    rc_pack_list(data->send_pairs, secret, auth) + AUTH_HDR_LEN;
 
-		auth->length = htons((unsigned short)total_length);
+		tlen = htons((unsigned short)total_length);
+		memcpy(&auth->length, &tlen, sizeof(uint16_t));
 
 		memset((char *)auth->vector, 0, AUTH_VECTOR_LEN);
 		secretlen = strlen(secret);
@@ -645,9 +703,9 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 					   auth_addr->ai_addrlen);
 		} while (result == -1 && errno == EINTR);
 		if (result == -1) {
+			result = errno == ENETUNREACH ? NETUNREACH_RC : ERROR_RC;
 			rc_log(LOG_ERR, "%s: socket: %s", __FUNCTION__,
 			       strerror(errno));
-			result = ERROR_RC;
 			goto cleanup;
 		}
 
@@ -846,6 +904,13 @@ int rc_send_server_ctx(rc_handle * rh, RC_AAA_CTX ** ctx, SEND_DATA * data,
 	if (sfuncs->unlock) {
 		if (sfuncs->unlock(sfuncs->ptr) != 0) {
 			rc_log(LOG_ERR, "%s: unlock error", __func__);
+		}
+	}
+ exit_error:
+	if (ns != NULL) {
+		if(-1 == rc_reset_netns(&ns_def_hdl)) {
+			rc_log(LOG_ERR, "rc_send_server: namespace %s reset failed", ns);
+			result = ERROR_RC;
 		}
 	}
 

@@ -118,7 +118,6 @@ static int set_option_srv(char const *filename, int line, OPTION *option, char c
 
 	serv = (SERVER *) option->val;
 	if (serv == NULL) {
-		DEBUG(LOG_ERR, "option->val / server is NULL, allocating memory");
 		serv = calloc(1, sizeof(*serv));
 		if (serv == NULL) {
 			rc_log(LOG_CRIT, "read_config: out of memory");
@@ -353,6 +352,8 @@ int rc_add_config(rc_handle *rh, char const *option_name, char const *option_val
  * Initialize the configuration structure from an external program.  For use when not
  * running a standalone client that reads from a config file.
  *
+ * The provided handled must have been allocated using rc_new().
+ *
  * @param rh a handle to parsed configuration.
  * @return rc_handle on success, NULL on failure.
  */
@@ -498,7 +499,16 @@ static int set_addr(struct sockaddr_storage *ss, const char *ip)
 	return 0;
 }
 
-static int apply_config(rc_handle *rh)
+/** Applies and initializes any parameters from the radcli configuration
+ *
+ * When no configuration file is provided and the configuration
+ * is provided via rc_add_config(), radcli requires the call of this function
+ * in order to initialize items for the connection.
+ *
+ * @param rh a handle to parsed configuration.
+ * @return 0 on success, -1 when failure.
+ */
+int rc_apply_config(rc_handle *rh)
 {
 	const char *txt;
 	int ret;
@@ -555,7 +565,9 @@ static int apply_config(rc_handle *rh)
 /** Read the global config file
  *
  * This function will load the provided configuration file, and
- * any other files such as the dictionary.
+ * any other files such as the dictionary. This is the most common
+ * mode of use of this library. The configuration format is compatible
+ * with the radiusclient-ng and freeradius-client formats.
  *
  * Note: To preserve compatibility with libraries of the same API
  * which don't load the dictionary care is taken not to reload the
@@ -573,7 +585,6 @@ rc_handle *rc_read_config(char const *filename)
 	size_t pos;
 	rc_handle *rh;
 
-	srandom((unsigned int)(time(NULL)+getpid()));
 
 	rh = rc_new();
 	if (rh == NULL)
@@ -810,7 +821,7 @@ int rc_test_config(rc_handle *rh, char const *filename)
 		return -1;
 	}
 
-	if (apply_config(rh) == -1) {
+	if (rc_apply_config(rh) == -1) {
 		return -1;
 	}
 
@@ -920,35 +931,35 @@ int rc_find_server_addr (rc_handle const *rh, char const *server_name,
 	char            hostnm[AUTH_ID_LEN + 1];
 	char	       *buffer_save;
 	char	       *hostnm_save;
-	SERVER	       *authservers;
-	SERVER	       *acctservers;
+	SERVER	       *servers;
 	struct addrinfo *tmpinfo = NULL;
 	const char      *fservers;
+	char const      *optname;
 
 	/* Lookup the IP address of the radius server */
 	if ((*info = rc_getaddrinfo (server_name, type==AUTH?PW_AI_AUTH:PW_AI_ACCT)) == NULL)
 		return -1;
 
-	if (type == AUTH) {
+	switch (type)
+	{
+	case AUTH: optname = "authserver"; break;
+	case ACCT: optname = "acctserver"; break;
+	default:   optname = NULL;
+	}
+
+	if ( (optname != NULL) &&
+	     ((servers = rc_conf_srv(rh, optname)) != NULL) )
+	{
 		/* Check to see if the server secret is defined in the rh config */
-		if( (authservers = rc_conf_srv(rh, "authserver")) != NULL )
+		unsigned  servernum;
+		size_t    server_name_len = strlen(server_name);
+		for (servernum = 0; servernum < servers->max; servernum++)
 		{
-			if( (strncmp(server_name, authservers->name[0], strlen(server_name)) == 0) &&
-			    (authservers->secret[0] != NULL) )
+			if( (strncmp(server_name, servers->name[servernum], server_name_len) == 0) &&
+				(servers->secret[servernum] != NULL) )
 			{
-				memset (secret, '\0', MAX_SECRET_LENGTH);
-				strlcpy (secret, authservers->secret[0], MAX_SECRET_LENGTH);
-				return 0;
-			}
-		}
-	} else if (type == ACCT) {
-		if( (acctservers = rc_conf_srv(rh, "acctserver")) != NULL )
-		{
-			if( (strncmp(server_name, acctservers->name[0], strlen(server_name)) == 0) &&
-			    (acctservers->secret[0] != NULL) )
-			{
-				memset (secret, '\0', MAX_SECRET_LENGTH);
-				strlcpy (secret, acctservers->secret[0], MAX_SECRET_LENGTH);
+				memset(secret, '\0', MAX_SECRET_LENGTH);
+				strlcpy(secret, servers->secret[servernum], MAX_SECRET_LENGTH);
 				return 0;
 			}
 		}
@@ -1085,6 +1096,8 @@ void rc_config_free(rc_handle *rh)
 	rh->first_dict_read = NULL;
 }
 
+static int _initialized = 0;
+
 /** Initialises new Radius Client handle
  *
  * @return a new rc_handle (free with rc_destroy).
@@ -1092,6 +1105,21 @@ void rc_config_free(rc_handle *rh)
 rc_handle *rc_new(void)
 {
 	rc_handle *rh;
+
+	if (_initialized == 0) {
+#if defined(HAVE_GNUTLS) && GNUTLS_VERSION_NUMBER < 0x030300
+		int ret;
+		ret = gnutls_global_init();
+		if (ret < 0) {
+			rc_log(LOG_ERR,
+			       "%s: error initializing gnutls: %s",
+			       __func__, gnutls_strerror(ret));
+			return NULL;
+		}
+#endif
+		srandom((unsigned int)(time(NULL)+getpid()));
+	}
+	_initialized++;
 
 	rh = calloc(1, sizeof(*rh));
 	if (rh == NULL) {
@@ -1110,6 +1138,13 @@ void rc_destroy(rc_handle *rh)
 	rc_dict_free(rh);
 	rc_config_free(rh);
 	free(rh);
+
+#if defined(HAVE_GNUTLS) && GNUTLS_VERSION_NUMBER < 0x030300
+	_initialized--;
+	if (_initialized == 0) {
+		gnutls_global_deinit();
+	}
+#endif
 }
 
 /** Returns the type of the socket used

@@ -47,23 +47,38 @@ Run autogen.sh to generate the configure script and makefiles.
 
 Required dependencies (Fedora/RHEL pkg):
 ```
-yum install -y autoconf libtool automake gnutls-devel abi-compliance-checker
+yum install -y autoconf libtool automake nettle-devel gnutls-devel abi-compliance-checker
 ```
 
 
 Required dependencies (Fedora 23+):
 ```
-dnf install -y autoconf libtool automake gnutls-devel gettext-devel abi-compliance-checker
+dnf install -y autoconf libtool automake nettle-devel gnutls-devel gettext-devel abi-compliance-checker
 ```
 
 
 Required dependencies (Debian pkg):
 ```
-apt-get install -y autoconf libtool automake libgnutls28-dev abi-compliance-checker
+apt-get install -y autoconf libtool automake nettle-dev libgnutls28-dev abi-compliance-checker
 ```
 
-5. Bug reporting
+5. Contributing/Submitting pull requests
+----------------------------------------
+
+For adding new features or extending functionality in addition to the code,
+please also submit a test program which verifies the correctness of operation.
+See tests/ and .travis.yml for the existing test suite.
+
+
+6. Bug reporting
 ----------------
 
 Please use the issue tracker at:
 https://github.com/radcli/radcli/issues
+
+
+7. Web Site
+-----------
+
+The web site http://radcli.github.io/radcli is the primary web-site for
+radcli and is auto-generated via the 'make web' rule.

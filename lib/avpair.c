@@ -89,7 +89,6 @@ void rc_avpair_remove (VALUE_PAIR **list, int attrid, int vendorpec)
 			} else { /* somewhere in the middle */
 				prev->next = vp->next;
 				free(vp);
-				vp = prev;
 			}
 			break;
 		}
@@ -195,18 +194,17 @@ VALUE_PAIR *rc_avpair_new (rc_handle const *rh, int attrid, void const *pval, in
 {
 	VALUE_PAIR     *vp = NULL;
 	DICT_ATTR      *pda;
-        int vattrid;
+	int vattrid;
 
-        if(vendorpec != VENDOR_NONE) {
-                vattrid = attrid | (vendorpec << 16);
-        } else {
-                vattrid = attrid;
-        }
+	if(vendorpec != VENDOR_NONE) {
+		vattrid = attrid | (vendorpec << 16);
+	} else {
+		vattrid = attrid;
+	}
 	if ((pda = rc_dict_getattr (rh, vattrid)) == NULL)
 	{
-                rc_log(LOG_ERR,"rc_avpair_new: no attribute %d/%u in dictionary",
-                       vendorpec,attrid);
-                return NULL;
+		rc_log(LOG_ERR,"rc_avpair_new: no attribute %d/%u in dictionary", vendorpec, attrid);
+		return NULL;
 	}
 	if (vendorpec != 0 && rc_dict_getvend(rh, vendorpec) == NULL)
 	{
@@ -297,8 +295,6 @@ VALUE_PAIR *rc_avpair_gen(rc_handle const *rh, VALUE_PAIR *pair, unsigned char c
 	if (length != attrlen) {
 		pair = rc_avpair_gen(rh, pair, ptr + attrlen, length - attrlen,
 		    vendorpec);
-		if (pair == NULL)
-			return NULL;
 	}
 
 	/* Actual processing */
@@ -456,8 +452,12 @@ VALUE_PAIR *rc_avpair_copy(VALUE_PAIR *p)
 	while (p) {
 		vp = malloc(sizeof(VALUE_PAIR));
 		if (!vp) {
-                  rc_log(LOG_CRIT, "rc_avpair_copy: out of memory");
-                  return NULL;  /* could leak pairs already copied */
+			while(fp) { /* free allocated memory */
+				vp = fp;
+				fp = fp->next;
+				free(vp);
+			}
+			return NULL;
 		}
 		*vp = *p;
 		if (!fp)
@@ -520,8 +520,10 @@ void rc_avpair_insert(VALUE_PAIR **a, VALUE_PAIR *p, VALUE_PAIR *b)
 		}
 	}
 
-	b->next = this_node->next;
-	this_node->next = b;
+	if (this_node) {
+		b->next = this_node->next;
+		this_node->next = b;
+	}
 
 	return;
 }
@@ -632,7 +634,7 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 			mode = PARSE_MODE_EQUAL;
 			break;
 
-		    case PARSE_MODE_EQUAL:		/* Equal sign */
+			case PARSE_MODE_EQUAL:		/* Equal sign */
 			if (*buffer == '=')
 			{
 				mode = PARSE_MODE_VALUE;
@@ -649,7 +651,7 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 			}
 			break;
 
-		    case PARSE_MODE_VALUE:		/* Value */
+			case PARSE_MODE_VALUE:		/* Value */
 			rc_fieldcpy (valstr, &buffer, " \t\n,", sizeof(valstr));
 
 			if ((pair = malloc (sizeof (VALUE_PAIR))) == NULL)
@@ -668,12 +670,12 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 			switch (pair->type)
 			{
 
-			    case PW_TYPE_STRING:
+				case PW_TYPE_STRING:
 				strcpy (pair->strvalue, valstr);
 				pair->lvalue = (uint32_t)strlen(valstr);
 				break;
 
-			    case PW_TYPE_INTEGER:
+				case PW_TYPE_INTEGER:
 				if (isdigit (*valstr))
 				{
 					pair->lvalue = atoi (valstr);
@@ -698,43 +700,43 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 				}
 				break;
 
-			    case PW_TYPE_IPADDR:
-			    	if (inet_pton(AF_INET, valstr, &pair->lvalue) == 0) {
-			    		rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv4 address %s", valstr);
-			    		free(pair);
-			    		return -1;
-			    	}
+				case PW_TYPE_IPADDR:
+					if (inet_pton(AF_INET, valstr, &pair->lvalue) == 0) {
+						rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv4 address %s", valstr);
+						free(pair);
+						return -1;
+					}
 
-                                pair->lvalue = ntohl(pair->lvalue);
+					pair->lvalue = ntohl(pair->lvalue);
 				break;
 
-			    case PW_TYPE_IPV6ADDR:
-			    	if (inet_pton(AF_INET6, valstr, pair->strvalue) == 0) {
-			    		rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 address %s", valstr);
-			    		free(pair);
-			    		return -1;
-			    	}
-				pair->lvalue = 16;
+				case PW_TYPE_IPV6ADDR:
+					if (inet_pton(AF_INET6, valstr, pair->strvalue) == 0) {
+						rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 address %s", valstr);
+						free(pair);
+						return -1;
+					}
+					pair->lvalue = 16;
 				break;
 
-			    case PW_TYPE_IPV6PREFIX:
-			    	p = strchr(valstr, '/');
-			    	if (p == NULL) {
-			    		rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 prefix %s", valstr);
-			    		free(pair);
-			    		return -1;
-			    	}
-			    	*p = 0;
-			    	p++;
-			    	pair->strvalue[0] = 0;
-			    	pair->strvalue[1] = atoi(p);
+				case PW_TYPE_IPV6PREFIX:
+					p = strchr(valstr, '/');
+					if (p == NULL) {
+						rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 prefix %s", valstr);
+						free(pair);
+						return -1;
+					}
+					*p = 0;
+					p++;
+					pair->strvalue[0] = 0;
+					pair->strvalue[1] = atoi(p);
 
-			    	if (inet_pton(AF_INET6, valstr, pair->strvalue+2) == 0) {
-			    		rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 prefix %s", valstr);
-			    		free(pair);
-			    		return -1;
-			    	}
-				pair->lvalue = 2+16;
+					if (inet_pton(AF_INET6, valstr, pair->strvalue+2) == 0) {
+						rc_log(LOG_ERR, "rc_avpair_parse: invalid IPv6 prefix %s", valstr);
+						free(pair);
+						return -1;
+					}
+					pair->lvalue = 2+16;
 				break;
 
 			    case PW_TYPE_DATE:
@@ -751,7 +753,7 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 #endif	/* TIMELOCAL */
 				break;
 
-			    default:
+				default:
 				rc_log(LOG_ERR, "rc_avpair_parse: unknown attribute type %d", pair->type);
 				if (*first_pair) {
 					rc_avpair_free(*first_pair);
@@ -806,7 +808,7 @@ int rc_avpair_parse (rc_handle const *rh, char const *buffer, VALUE_PAIR **first
 			mode = PARSE_MODE_NAME;
 			break;
 
-		    default:
+			default:
 			mode = PARSE_MODE_NAME;
 			break;
 		}
@@ -843,7 +845,7 @@ int rc_avpair_tostr (rc_handle const *rh, VALUE_PAIR *pair, char *name, int ln, 
 
 	switch (pair->type)
 	{
-	    case PW_TYPE_STRING:
+		case PW_TYPE_STRING:
 		lv--;
 		pos = 0;
 		ptr = (unsigned char *) pair->strvalue;
@@ -882,7 +884,7 @@ int rc_avpair_tostr (rc_handle const *rh, VALUE_PAIR *pair, char *name, int ln, 
 			value[pos-1] = 0;
 		break;
 
-	    case PW_TYPE_INTEGER:
+		case PW_TYPE_INTEGER:
 		dval = rc_dict_getval (rh, pair->lvalue, pair->name);
 		if (dval != NULL)
 		{
@@ -894,37 +896,41 @@ int rc_avpair_tostr (rc_handle const *rh, VALUE_PAIR *pair, char *name, int ln, 
 		}
 		break;
 
-	    case PW_TYPE_IPADDR:
+		case PW_TYPE_IPADDR:
 		inad.s_addr = htonl(pair->lvalue);
 		strlcpy (value, inet_ntoa (inad), (size_t) lv);
 		break;
 
-	    case PW_TYPE_IPV6ADDR:
-	    	if (inet_ntop(AF_INET6, pair->strvalue, value, lv) == NULL)
-	    		return -1;
+		case PW_TYPE_IPV6ADDR:
+			if (inet_ntop(AF_INET6, pair->strvalue, value, lv) == NULL)
+				return -1;
 		break;
 
-	    case PW_TYPE_IPV6PREFIX: {
-	    	uint8_t ip[16];
-	    	uint8_t txt[48];
-	    	if (pair->lvalue < 2)
-	    		return -1;
+		case PW_TYPE_IPV6PREFIX: {
+			uint8_t ip[16];
+			uint8_t txt[48];
+			if (pair->lvalue < 2)
+				return -1;
 
-	    	memset(ip, 0, sizeof(ip));
-	    	memcpy(ip, pair->strvalue+2, pair->lvalue-2);
+			memset(ip, 0, sizeof(ip));
+			memcpy(ip, pair->strvalue+2, pair->lvalue-2);
 
-	    	if (inet_ntop(AF_INET6, ip, (void*)txt, sizeof(txt)) == NULL)
-	    		return -1;
+			if (inet_ntop(AF_INET6, ip, (void*)txt, sizeof(txt)) == NULL)
+				return -1;
 		snprintf(value, lv, "%s/%u", txt, (unsigned)pair->strvalue[1]);
 
 		break;
-	    }
-	    case PW_TYPE_DATE:
-		strftime (value, lv, "%m/%d/%y %H:%M:%S",
-			  gmtime ((time_t *) & pair->lvalue));
-		break;
+		}
+		case PW_TYPE_DATE: {
+			struct tm *ptm = gmtime((time_t *) & pair->lvalue);
+			if (ptm == NULL)
+				return -1;
 
-	    default:
+			strftime (value, lv, "%m/%d/%y %H:%M:%S", ptm);
+		break;
+		}
+
+		default:
 		rc_log(LOG_ERR, "rc_avpair_tostr: unknown attribute type %d", pair->type);
 		return -1;
 		break;
@@ -953,7 +959,7 @@ char *rc_avpair_log(rc_handle const *rh, VALUE_PAIR *pair, char *buf, size_t buf
 	for (vp = pair; vp != NULL; vp = vp->next) {
 		if (rc_avpair_tostr(rh, vp, name, sizeof(name), value,
 		    sizeof(value)) == -1)
-		        return NULL;
+				return NULL;
 		nlen = len + 32 + 3 + strlen(value) + 2 + 2;
 		if(nlen<buf_len-1) {
 			sprintf(buf + len, "%-32s = '%s'\n", name, value);
@@ -977,8 +983,8 @@ int rc_avpair_get_uint32 (VALUE_PAIR *vp, uint32_t *res)
 {
 	if (vp->type == PW_TYPE_DATE || vp->type == PW_TYPE_IPADDR ||
 	    vp->type == PW_TYPE_INTEGER) {
-	    	if (res)
-		    *res = vp->lvalue;
+			if (res)
+				*res = vp->lvalue;
 		return 0;
 	} else {
 		return -1;
@@ -1000,17 +1006,17 @@ int rc_avpair_get_in6 (VALUE_PAIR *vp, struct in6_addr *res, unsigned *prefix)
 		memcpy(res, vp->strvalue, 16);
 		return 0;
 	} else if (vp->type == PW_TYPE_IPV6PREFIX) {
-	    	if (vp->lvalue < 2 || vp->lvalue > 18)
-	    		return -1;
+			if (vp->lvalue < 2 || vp->lvalue > 18)
+				return -1;
 
 		if (res) {
-		    	memset(res, 0, 16);
-		    	memcpy(res, vp->strvalue+2, vp->lvalue-2);
+			memset(res, 0, 16);
+			memcpy(res, vp->strvalue+2, vp->lvalue-2);
 		}
 
 		if (prefix)
-		    	*prefix = (unsigned char)vp->strvalue[1];
-	    	return 0;
+			*prefix = (unsigned char)vp->strvalue[1];
+		return 0;
 	}
 
 	return -1;
@@ -1029,9 +1035,9 @@ int rc_avpair_get_in6 (VALUE_PAIR *vp, struct in6_addr *res, unsigned *prefix)
 int rc_avpair_get_raw (VALUE_PAIR *vp, char **res, unsigned *res_size)
 {
 	if (vp->type == PW_TYPE_STRING || vp->type == PW_TYPE_IPV6ADDR ||
-	    vp->type == PW_TYPE_IPV6PREFIX) {
-	    	if (res)
-	    		*res = vp->strvalue;
+		vp->type == PW_TYPE_IPV6PREFIX) {
+			if (res)
+				*res = vp->strvalue;
 		if (res_size)
 			*res_size = vp->lvalue;
 		return 0;

@@ -44,7 +44,7 @@ extern "C" {
  * @{
  */
 
-#define AUTH_PASS_LEN		(3 * 16) /* multiple of 16 */
+#define AUTH_PASS_LEN		(7 * 16) /* multiple of 16 */
 #define AUTH_ID_LEN		64
 
 #define BUFFER_LEN		8192
@@ -451,6 +451,7 @@ typedef struct dict_vendor
 /** \enum rc_send_status Return codes for rc_send_server()
  */
 typedef enum rc_send_status {
+	NETUNREACH_RC=-4,
 	BADRESPID_RC=-3,
 	BADRESP_RC=-2,
 	ERROR_RC=-1,
@@ -531,7 +532,7 @@ typedef struct rc_aaa_ctx_st RC_AAA_CTX;
  * parsing the file, simplifying application configuration and administration.
  *
  * Alternative operation without a configuration file is also possible, see
- * rc_add_config().
+ * rc_add_config() and rc_apply_config().
  *
  * Check radexample.c for a functional example.
  *
@@ -609,6 +610,7 @@ char *rc_conf_str(rc_handle const *rh, char const *optname);
 int rc_conf_int(rc_handle const *rh, char const *optname);
 SERVER *rc_conf_srv(rc_handle const *rh, char const *optname);
 int rc_test_config(rc_handle *rh, char const *filename);
+int rc_apply_config(rc_handle *rh);
 int rc_find_server_addr (rc_handle const *rh, char const *server_name,
                          struct addrinfo** info, char *secret, rc_type type);
 void rc_config_free(rc_handle *rh);
@@ -621,6 +623,7 @@ rc_socket_type rc_get_socket_type(rc_handle * rh);
 /* dict.c */
 
 int rc_read_dictionary (rc_handle *rh, char const *filename);
+int rc_read_dictionary_from_buffer (rc_handle *rh, char const *buf, size_t size);
 DICT_ATTR *rc_dict_getattr(rc_handle const *rh, int attribute);
 DICT_ATTR *rc_dict_findattr(rc_handle const *rh, char const *attrname);
 DICT_VALUE *rc_dict_findval(rc_handle const *rh, char const *valname);
